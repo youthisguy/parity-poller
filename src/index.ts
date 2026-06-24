@@ -102,28 +102,74 @@ async function poll() {
 async function runEngine() {
   const flagged: string[] = [];
 
+  const openRes = await fetch(`${NEXT_URL}/api/mcp/active_divergences`);
+  const openData = await openRes.json();
+
+  // most recent open event per symbol
+  const openBySymbol = new Map<string, { id: number; opened_at: number }>();
+  for (const e of (openData.events ?? [])) {
+    if (!openBySymbol.has(e.symbol)) {
+      openBySymbol.set(e.symbol, { id: e.id, opened_at: e.opened_at });
+    }
+  }
+
   for (const [, , perpSymbol] of SYMBOLS) {
     try {
-      const res = await fetch(
-        `${NEXT_URL}/api/mcp/check_divergence?symbol=${perpSymbol}`
-      );
+      const res = await fetch(`${NEXT_URL}/api/mcp/check_divergence?symbol=${perpSymbol}`);
       const data = await res.json();
+      const openEntry = openBySymbol.get(perpSymbol);
+      const isOpen = openEntry !== undefined;
 
       if (data.flagged) {
         flagged.push(perpSymbol);
+        if (!isOpen) {
+          await fetch(`${NEXT_URL}/api/events`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              symbol: perpSymbol,
+              ts: data.ts,
+              spreads: data.spreads,
+              prices: data.prices,
+            }),
+          });
+          console.log(`[engine] ⚡ NEW ${perpSymbol}`);
+        } else {
+          const ageMs = Date.now() - openEntry.opened_at;
+          if (ageMs > 60 * 60 * 1000) {
+            await fetch(`${NEXT_URL}/api/events`, {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                symbol: perpSymbol,
+                ts: data.ts,
+                spreads: data.spreads,
+                prices: data.prices,
+                resolution: "timeout",
+              }),
+            });
+            console.log(`[engine] ⏱ timeout ${perpSymbol}`);
+          } else {
+            console.log(`[engine] 📌 holding ${perpSymbol} (${Math.round(ageMs / 1000)}s)`);
+          }
+        }
+      } else if (isOpen) {
         await fetch(`${NEXT_URL}/api/events`, {
-          method: "POST",
+          method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             symbol: perpSymbol,
             ts: data.ts,
             spreads: data.spreads,
             prices: data.prices,
+            resolution: "reverted",
           }),
         });
-        console.log(`[engine] ⚡ FLAGGED + logged ${perpSymbol}`);
+        console.log(`[engine] ✓ closed ${perpSymbol}`);
       }
-    } catch {}
+    } catch (err) {
+      console.error(`[engine] error on ${perpSymbol}:`, err);
+    }
   }
 
   flaggedSymbols = flagged;
