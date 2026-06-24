@@ -8,7 +8,7 @@ const app = express();
 app.use(express.json());
 
 const NEXT_URL = process.env.NEXT_URL ?? "http://localhost:3000";
-const PORT = process.env.PORT ?? 3001;
+const PORT = process.env.PORT ?? 3002;
 const POLL_INTERVAL_MS = parseInt(process.env.POLL_INTERVAL_MS ?? "5000");
 
 // ── Symbol table  
@@ -45,32 +45,38 @@ app.get("/status", (_req, res) => {
 
 // ── Poll loop  
 async function poll() {
-    const ticks = [];
-  
-    for (const [rTokenSymbol, onTokenSymbol, perpSymbol, productType] of SYMBOLS) {
-      const ts = Date.now();
-      try {
-        const [rtoken, ontoken, perp] = await Promise.all([
-          fetchSpotTicker(rTokenSymbol),
-          fetchSpotTicker(onTokenSymbol),
-          fetchPerpTicker(perpSymbol, productType),
-        ]);
-  
-        if (!perp) continue;
-  
-        ticks.push({
-          symbol: perpSymbol,
-          asset_class: "stock",
-          ts,
-          rtoken_price:  rtoken  ? parseFloat(rtoken.lastPr)      : null,
-          ontoken_price: ontoken ? parseFloat(ontoken.lastPr)     : null,
-          perp_mark:     perp.markPrice   ? parseFloat(perp.markPrice)   : null,
-          perp_index:    perp.indexPrice  ? parseFloat(perp.indexPrice)  : null,
-          funding_rate:  perp.fundingRate ? parseFloat(perp.fundingRate) : null,
-        });
-      } catch (err) {
-        console.error(`[poll] error on ${perpSymbol}:`, err);
+  const ticks = [];
+
+  for (const [rTokenSymbol, onTokenSymbol, perpSymbol, productType] of SYMBOLS) {
+    const ts = Date.now();
+    try {
+      const [rtoken, ontoken, perp] = await Promise.all([
+        fetchSpotTicker(rTokenSymbol),
+        fetchSpotTicker(onTokenSymbol),
+        fetchPerpTicker(perpSymbol, productType),
+      ]);
+
+      console.log(`[poll] ${perpSymbol} rtoken=${rtoken?.lastPr ?? "null"} perp=${perp?.markPrice ?? "null"}`);
+
+      if (!perp) {
+        console.log(`[poll] skipping ${perpSymbol} — perp returned null`);
+        continue;
       }
+
+      ticks.push({
+        symbol: perpSymbol,
+        asset_class: "stock",
+        ts,
+        rtoken_price:  rtoken  ? parseFloat(rtoken.lastPr)    : null,
+        ontoken_price: ontoken ? parseFloat(ontoken.lastPr)   : null,
+        perp_mark:     perp.markPrice   ? parseFloat(perp.markPrice)   : null,
+        perp_index:    perp.indexPrice  ? parseFloat(perp.indexPrice)  : null,
+        funding_rate:  perp.fundingRate ? parseFloat(perp.fundingRate) : null,
+      });
+    } catch (err) {
+      console.error(`[poll] error on ${perpSymbol}:`, err);
+      pollErrors++;
+    }
     }
 
   if (ticks.length === 0) return;
@@ -82,6 +88,7 @@ async function poll() {
       body: JSON.stringify(ticks),
     });
     const data = await res.json();
+    console.log(`[post] status=${res.status} response=${JSON.stringify(data)}`);
     lastPollAt = Date.now();
     lastPollInserted = data.inserted ?? 0;
     console.log(`[${new Date().toISOString()}] inserted ${lastPollInserted} ticks`);
@@ -95,7 +102,7 @@ async function poll() {
 async function runEngine() {
   const flagged: string[] = [];
 
-  for (const [, perpSymbol] of SYMBOLS) {
+  for (const [, , perpSymbol] of SYMBOLS) {
     try {
       const res = await fetch(
         `${NEXT_URL}/api/mcp/check_divergence?symbol=${perpSymbol}`
@@ -104,14 +111,19 @@ async function runEngine() {
 
       if (data.flagged) {
         flagged.push(perpSymbol);
-        console.log(
-          `[engine] ⚡ FLAGGED ${perpSymbol}` +
-          ` z_mark=${data.spreads?.mark_vs_index?.z?.toFixed(2)}`
-        );
+        await fetch(`${NEXT_URL}/api/events`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            symbol: perpSymbol,
+            ts: data.ts,
+            spreads: data.spreads,
+            prices: data.prices,
+          }),
+        });
+        console.log(`[engine] ⚡ FLAGGED + logged ${perpSymbol}`);
       }
-    } catch {
- 
-    }
+    } catch {}
   }
 
   flaggedSymbols = flagged;

@@ -40,13 +40,19 @@ async function fetchWithTimeout(url: string): Promise<Response> {
   
   export async function fetchPerpTicker(symbol: string, productType: ProductType) {
     try {
-      const res = await fetchWithTimeout(
-        `${BASE_MIX}/market/ticker?symbol=${symbol}&productType=${productType}`
-      );
-      if (!res.ok) return null;
+      const url = `${BASE_MIX}/market/ticker?symbol=${symbol}&productType=${productType}`;
+      const res = await fetchWithTimeout(url);
+      if (!res.ok) {
+        console.error(`[bitget] ${symbol} HTTP ${res.status}`);
+        return null;
+      }
       const json = await res.json();
+      console.log(`[bitget] ${symbol} raw:`, JSON.stringify(json).slice(0, 120));
       const d = json?.data;
       return Array.isArray(d) ? d[0] ?? null : d ?? null;
-    } catch { return null; }
+    } catch (err) {
+      console.error(`[bitget] ${symbol} fetch error:`, err);
+      return null;
+    }
   }
   
