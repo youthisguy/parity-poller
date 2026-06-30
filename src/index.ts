@@ -179,6 +179,26 @@ async function runEngine() {
         } else {
           const ageMs = Date.now() - openEntry.opened_at;
           if (ageMs > 60 * 60 * 1000) {
+            // ── force-close the real position on timeout ──────────────────
+            try {
+              const closeRes = await fetch(`${NEXT_URL}/api/mcp/close_trade`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  symbol: perpSymbol,
+                  prices: data.prices,
+                }),
+              });
+              const closeData = await closeRes.json();
+              console.log(
+                closeData.closed
+                  ? `[agent] 🔒 TIMEOUT-CLOSED ${perpSymbol}`
+                  : `[agent] ⏭ timeout close skipped ${perpSymbol} — ${closeData.reason}`
+              );
+            } catch (closeErr) {
+              console.error(`[agent] timeout close_trade failed for ${perpSymbol}:`, closeErr);
+            }
+
             await fetch(`${NEXT_URL}/api/events`, {
               method: "PATCH",
               headers: { "Content-Type": "application/json" },
@@ -198,6 +218,28 @@ async function runEngine() {
           }
         }
       } else if (isOpen) {
+        // ── attempt to close the real position ───────────────────────
+        try {
+          const closeRes = await fetch(`${NEXT_URL}/api/mcp/close_trade`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              symbol: perpSymbol,
+              prices: data.prices,
+            }),
+          });
+          const closeData = await closeRes.json();
+
+          if (closeData.closed) {
+            console.log(`[agent] 🔒 CLOSED ${perpSymbol}`);
+          } else {
+            console.log(`[agent] ⏭ close skipped ${perpSymbol} — ${closeData.reason}`);
+          }
+        } catch (closeErr) {
+          console.error(`[agent] close_trade failed for ${perpSymbol}:`, closeErr);
+        }
+
+        // still log the resolution for the dashboard/leaderboard
         await fetch(`${NEXT_URL}/api/events`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
