@@ -140,6 +140,31 @@ async function runEngine() {
       if (data.flagged) {
         flagged.push(perpSymbol);
         if (!isOpen) {
+          // ── attempt execution before logging the event ──────────
+          try {
+            const execRes = await fetch(`${NEXT_URL}/api/mcp/execute_trade`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                symbol: perpSymbol,
+                spreads: data.spreads,
+                prices: data.prices,
+              }),
+            });
+            const execData = await execRes.json();
+
+            if (execData.executed) {
+              console.log(
+                `[agent] ✅ EXECUTED ${perpSymbol} net_edge=${(execData.net_edge * 100).toFixed(3)}%`
+              );
+            } else {
+              console.log(`[agent] ⏭ skipped ${perpSymbol} — ${execData.reason}`);
+            }
+          } catch (execErr) {
+            console.error(`[agent] execute_trade failed for ${perpSymbol}:`, execErr);
+          }
+
+          // ── always log the divergence event regardless of execution ──
           await fetch(`${NEXT_URL}/api/events`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
